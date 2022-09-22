@@ -476,10 +476,16 @@ pub(crate) struct Loader {
     module_cache_hits: RwLock<BTreeSet<ModuleId>>,
 
     verifier_config: VerifierConfig,
+
+    strict: bool,
 }
 
 impl Loader {
-    pub(crate) fn new(natives: NativeFunctions, verifier_config: VerifierConfig) -> Self {
+    pub(crate) fn new(
+        natives: NativeFunctions,
+        verifier_config: VerifierConfig,
+        strict: bool,
+    ) -> Self {
         Self {
             scripts: RwLock::new(ScriptCache::new()),
             module_cache: RwLock::new(ModuleCache::new()),
@@ -488,6 +494,7 @@ impl Loader {
             invalidated: RwLock::new(false),
             module_cache_hits: RwLock::new(BTreeSet::new()),
             verifier_config,
+            strict,
         }
     }
 
@@ -2306,14 +2313,18 @@ impl Loader {
             .map(|ty| self.type_to_type_layout_impl(ty, depth + 1))
             .collect::<PartialVMResult<Vec<_>>>()?;
 
-        let struct_layout = MoveStructLayout::CheckedRuntime {
-            fields: field_layouts,
-            tag: if ty_args.is_empty() {
-                Type::Struct(gidx)
-            } else {
-                Type::StructInstantiation(gidx, ty_args.to_vec())
+        let struct_layout = if self.strict {
+            MoveStructLayout::CheckedRuntime {
+                fields: field_layouts,
+                tag: if ty_args.is_empty() {
+                    Type::Struct(gidx)
+                } else {
+                    Type::StructInstantiation(gidx, ty_args.to_vec())
+                }
+                .get_hash(),
             }
-            .get_hash(),
+        } else {
+            MoveStructLayout::Runtime(field_layouts)
         };
 
         self.type_cache
@@ -2362,6 +2373,10 @@ impl Loader {
     }
     pub(crate) fn type_to_type_layout(&self, ty: &Type) -> PartialVMResult<MoveTypeLayout> {
         self.type_to_type_layout_impl(ty, 1)
+    }
+
+    pub(crate) fn strict(&self) -> bool {
+        self.strict
     }
 }
 

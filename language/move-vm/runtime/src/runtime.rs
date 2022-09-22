@@ -47,7 +47,11 @@ impl VMRuntime {
         verifier_config: VerifierConfig,
     ) -> PartialVMResult<Self> {
         Ok(VMRuntime {
-            loader: Loader::new(NativeFunctions::new(natives)?, verifier_config.clone()),
+            loader: Loader::new(
+                NativeFunctions::new(natives)?,
+                verifier_config.clone(),
+                verifier_config.strict_runtime_verification,
+            ),
             verifier_config,
         })
     }

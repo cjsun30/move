@@ -1888,19 +1888,17 @@ impl ValueImpl {
 }
 
 impl Container {
-    fn check_type(&self, ty: &Type) -> PartialVMResult<()> {     
+    fn check_type(&self, ty: &Type) -> PartialVMResult<()> {
         macro_rules! check_ty {
             ($ty:ident, $tc: ident) => {{
                 match **$ty {
                     Type::$tc => Ok(()),
-                    _ => {
-                        Err(PartialVMError::new(
-                            StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
-                        )
-                        .with_message(
-                            "failed to write_ref: container type mismatch".to_string(),
-                        ))
-                    }
+                    _ => Err(
+                        PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                            .with_message(
+                                "failed to write_ref: container type mismatch".to_string(),
+                            ),
+                    ),
                 }
             }};
         }
@@ -1931,13 +1929,14 @@ impl Container {
             }
             // We omit the check for structs that are not tagged. This is because structs can be returned from external native functions.
             (Self::Struct(_, None), _) => Ok(()),
-            (_, _) => Err(PartialVMError::new(
-                StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
-            )
-            .with_message(format!(
-                "unexpected type mismatch between {:?}, expected {:?}",
-                self, ty
-            ))),
+            (_, _) => Err(
+                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR).with_message(
+                    format!(
+                        "unexpected type mismatch between {:?}, expected {:?}",
+                        self, ty
+                    ),
+                ),
+            ),
         }
     }
 }

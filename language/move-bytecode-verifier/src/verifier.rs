@@ -20,6 +20,7 @@ use move_binary_format::{
 pub struct VerifierConfig {
     pub max_loop_depth: Option<usize>,
     pub treat_friend_as_private: bool,
+    pub strict_runtime_verification: bool,
 }
 
 /// Helper for a "canonical" verification of a module.

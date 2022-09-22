@@ -67,6 +67,8 @@ pub(crate) struct Interpreter {
     operand_stack: Stack,
     /// The stack of active functions.
     call_stack: CallStack,
+    /// Whether to perform runtime type safety checks.
+    strict: bool,
 }
 
 struct TypeWithLoader<'a, 'b> {
@@ -94,7 +96,7 @@ impl Interpreter {
     ) -> VMResult<Vec<Value>> {
         // We count the intrinsic cost of the transaction here, since that needs to also cover the
         // setup of the function.
-        let mut interp = Self::new();
+        let mut interp = Self::new(loader.strict());
         interp.execute(
             loader, data_store, gas_meter, extensions, function, ty_args, args,
         )
@@ -102,10 +104,11 @@ impl Interpreter {
 
     /// Create a new instance of an `Interpreter` in the context of a transaction with a
     /// given module cache and gas schedule.
-    fn new() -> Self {
+    fn new(strict: bool) -> Self {
         Interpreter {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
+            strict,
         }
     }
 
@@ -152,7 +155,7 @@ impl Interpreter {
                 .map_err(|e| self.set_location(e))?;
         }
 
-        let mut current_frame = Frame::new(function, ty_args, locals);
+        let mut current_frame = Frame::new(function, ty_args, locals, self.strict);
         loop {
             let resolver = current_frame.resolver(loader);
             let exit_code = current_frame //self
@@ -273,30 +276,34 @@ impl Interpreter {
         let arg_count = func.arg_count();
         for i in 0..arg_count {
             let v = self.operand_stack.pop().map_err(|e| self.set_location(e))?;
-            let expected_ty = resolver
-                .resolve_signature_token(&func.local_types()[arg_count - i - 1])
-                .and_then(|ty| ty.subst(&ty_args))
-                .map_err(|e| match func.module_id() {
-                    Some(id) => e
-                        .at_code_offset(func.index(), 0)
-                        .finish(Location::Module(id.clone())),
-                    None => {
-                        let err =
-                            PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
-                                .with_message(
-                                    "Unexpected native function not located in a module".to_owned(),
-                                );
-                        self.set_location(err)
-                    }
-                })?;
+            if self.strict {
+                let expected_ty = resolver
+                    .resolve_signature_token(&func.local_types()[arg_count - i - 1])
+                    .and_then(|ty| ty.subst(&ty_args))
+                    .map_err(|e| match func.module_id() {
+                        Some(id) => e
+                            .at_code_offset(func.index(), 0)
+                            .finish(Location::Module(id.clone())),
+                        None => {
+                            let err =
+                                PartialVMError::new(StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR)
+                                    .with_message(
+                                        "Unexpected native function not located in a module"
+                                            .to_owned(),
+                                    );
+                            self.set_location(err)
+                        }
+                    })?;
 
-            v.check_type(&expected_ty)
-                .map_err(|e| self.set_location(e))?;
+                v.check_type(&expected_ty)
+                    .map_err(|e| self.set_location(e))?;
+            }
+
             locals
                 .store_loc(arg_count - i - 1, v)
                 .map_err(|e| self.set_location(e))?;
         }
-        Ok(Frame::new(func, ty_args, locals))
+        Ok(Frame::new(func, ty_args, locals, self.strict))
     }
 
     /// Call a native functions.
@@ -810,6 +817,7 @@ struct Frame {
     locals: Locals,
     function: Arc<Function>,
     ty_args: Vec<Type>,
+    strict: bool,
 }
 
 /// An `ExitCode` from `execute_code_unit`.
@@ -824,12 +832,13 @@ impl Frame {
     /// Create a new `Frame` given a `Function` and the function `Locals`.
     ///
     /// The locals must be loaded before calling this.
-    fn new(function: Arc<Function>, ty_args: Vec<Type>, locals: Locals) -> Self {
+    fn new(function: Arc<Function>, ty_args: Vec<Type>, locals: Locals, strict: bool) -> Self {
         Frame {
             pc: 0,
             locals,
             function,
             ty_args,
+            strict,
         }
     }
 
@@ -1012,10 +1021,14 @@ impl Frame {
                             interpreter.operand_stack.last_n(field_count as usize)?,
                         )?;
                         let args = interpreter.operand_stack.popn(field_count)?;
-                        let value = Value::struct_(Struct::pack_with_tag(
-                            args,
-                            resolver.get_struct_type(*sd_idx).get_hash(),
-                        ));
+                        let value = Value::struct_(if self.strict {
+                            Struct::pack_with_tag(
+                                args,
+                                resolver.get_struct_type(*sd_idx).get_hash(),
+                            )
+                        } else {
+                            Struct::pack(args)
+                        });
                         interpreter.operand_stack.push(value)?;
                     }
                     Bytecode::PackGeneric(si_idx) => {
@@ -1025,27 +1038,33 @@ impl Frame {
                             interpreter.operand_stack.last_n(field_count as usize)?,
                         )?;
                         let args = interpreter.operand_stack.popn(field_count)?;
-                        let value = Value::struct_(Struct::pack_with_tag(
-                            args,
-                            resolver
-                                .instantiate_generic_type(*si_idx, self.ty_args())?
-                                .get_hash(),
-                        ));
+                        let value = Value::struct_(if self.strict {
+                            Struct::pack_with_tag(
+                                args,
+                                resolver
+                                    .instantiate_generic_type(*si_idx, self.ty_args())?
+                                    .get_hash(),
+                            )
+                        } else {
+                            Struct::pack(args)
+                        });
 
                         interpreter.operand_stack.push(value)?;
                     }
                     Bytecode::Unpack(sd_idx) => {
                         let struct_ = interpreter.operand_stack.pop_as::<Struct>()?;
-                        let ty = resolver.get_struct_type(*sd_idx);
-                        if let Some(ty1) = struct_.tag() {
-                            if ty1 != ty.get_hash() {
-                                return Err(PartialVMError::new(
-                                    StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
-                                )
-                                .with_message(format!(
-                                    "unexpected type mismatch, got {:?} expected {:?}",
-                                    struct_, ty
-                                )));
+                        if self.strict {
+                            let ty = resolver.get_struct_type(*sd_idx);
+                            if let Some(ty1) = struct_.tag() {
+                                if ty1 != ty.get_hash() {
+                                    return Err(PartialVMError::new(
+                                        StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
+                                    )
+                                    .with_message(format!(
+                                        "unexpected type mismatch, got {:?} expected {:?}",
+                                        struct_, ty
+                                    )));
+                                }
                             }
                         }
 
@@ -1057,16 +1076,18 @@ impl Frame {
                     }
                     Bytecode::UnpackGeneric(si_idx) => {
                         let struct_ = interpreter.operand_stack.pop_as::<Struct>()?;
-                        let ty = resolver.instantiate_generic_type(*si_idx, self.ty_args())?;
-                        if let Some(ty1) = struct_.tag() {
-                            if ty1 != ty.get_hash() {
-                                return Err(PartialVMError::new(
-                                    StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
-                                )
-                                .with_message(format!(
-                                    "unexpected type mismatch, got {:?} expected {:?}",
-                                    struct_, ty
-                                )));
+                        if self.strict {
+                            let ty = resolver.instantiate_generic_type(*si_idx, self.ty_args())?;
+                            if let Some(ty1) = struct_.tag() {
+                                if ty1 != ty.get_hash() {
+                                    return Err(PartialVMError::new(
+                                        StatusCode::UNKNOWN_INVARIANT_VIOLATION_ERROR,
+                                    )
+                                    .with_message(format!(
+                                        "unexpected type mismatch, got {:?} expected {:?}",
+                                        struct_, ty
+                                    )));
+                                }
                             }
                         }
 
