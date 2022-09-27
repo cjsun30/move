@@ -68,7 +68,7 @@ pub(crate) struct Interpreter {
     /// The stack of active functions.
     call_stack: CallStack,
     /// Whether to perform runtime type safety checks.
-    strict: bool,
+    check_runtime_types: bool,
 }
 
 struct TypeWithLoader<'a, 'b> {
@@ -96,7 +96,7 @@ impl Interpreter {
     ) -> VMResult<Vec<Value>> {
         // We count the intrinsic cost of the transaction here, since that needs to also cover the
         // setup of the function.
-        let mut interp = Self::new(loader.strict());
+        let mut interp = Self::new(loader.check_runtime_types());
         interp.execute(
             loader, data_store, gas_meter, extensions, function, ty_args, args,
         )
@@ -104,11 +104,11 @@ impl Interpreter {
 
     /// Create a new instance of an `Interpreter` in the context of a transaction with a
     /// given module cache and gas schedule.
-    fn new(strict: bool) -> Self {
+    fn new(check_runtime_types: bool) -> Self {
         Interpreter {
             operand_stack: Stack::new(),
             call_stack: CallStack::new(),
-            strict,
+            check_runtime_types,
         }
     }
 
@@ -155,7 +155,7 @@ impl Interpreter {
                 .map_err(|e| self.set_location(e))?;
         }
 
-        let mut current_frame = Frame::new(function, ty_args, locals, self.strict);
+        let mut current_frame = Frame::new(function, ty_args, locals, self.check_runtime_types);
         loop {
             let resolver = current_frame.resolver(loader);
             let exit_code = current_frame //self
@@ -276,7 +276,7 @@ impl Interpreter {
         let arg_count = func.arg_count();
         for i in 0..arg_count {
             let v = self.operand_stack.pop().map_err(|e| self.set_location(e))?;
-            if self.strict {
+            if self.check_runtime_types {
                 let expected_ty = resolver
                     .resolve_signature_token(&func.local_types()[arg_count - i - 1])
                     .and_then(|ty| ty.subst(&ty_args))
@@ -303,7 +303,7 @@ impl Interpreter {
                 .store_loc(arg_count - i - 1, v)
                 .map_err(|e| self.set_location(e))?;
         }
-        Ok(Frame::new(func, ty_args, locals, self.strict))
+        Ok(Frame::new(func, ty_args, locals, self.check_runtime_types))
     }
 
     /// Call a native functions.
@@ -817,7 +817,7 @@ struct Frame {
     locals: Locals,
     function: Arc<Function>,
     ty_args: Vec<Type>,
-    strict: bool,
+    check_runtime_types: bool,
 }
 
 /// An `ExitCode` from `execute_code_unit`.
@@ -832,13 +832,18 @@ impl Frame {
     /// Create a new `Frame` given a `Function` and the function `Locals`.
     ///
     /// The locals must be loaded before calling this.
-    fn new(function: Arc<Function>, ty_args: Vec<Type>, locals: Locals, strict: bool) -> Self {
+    fn new(
+        function: Arc<Function>,
+        ty_args: Vec<Type>,
+        locals: Locals,
+        check_runtime_types: bool,
+    ) -> Self {
         Frame {
             pc: 0,
             locals,
             function,
             ty_args,
-            strict,
+            check_runtime_types,
         }
     }
 
@@ -1021,7 +1026,7 @@ impl Frame {
                             interpreter.operand_stack.last_n(field_count as usize)?,
                         )?;
                         let args = interpreter.operand_stack.popn(field_count)?;
-                        let value = Value::struct_(if self.strict {
+                        let value = Value::struct_(if self.check_runtime_types {
                             Struct::pack_with_tag(
                                 args,
                                 resolver.get_struct_type(*sd_idx).get_hash(),
@@ -1038,7 +1043,7 @@ impl Frame {
                             interpreter.operand_stack.last_n(field_count as usize)?,
                         )?;
                         let args = interpreter.operand_stack.popn(field_count)?;
-                        let value = Value::struct_(if self.strict {
+                        let value = Value::struct_(if self.check_runtime_types {
                             Struct::pack_with_tag(
                                 args,
                                 resolver
@@ -1053,7 +1058,7 @@ impl Frame {
                     }
                     Bytecode::Unpack(sd_idx) => {
                         let struct_ = interpreter.operand_stack.pop_as::<Struct>()?;
-                        if self.strict {
+                        if self.check_runtime_types {
                             let ty = resolver.get_struct_type(*sd_idx);
                             if let Some(ty1) = struct_.tag() {
                                 if ty1 != ty.get_hash() {
@@ -1076,7 +1081,7 @@ impl Frame {
                     }
                     Bytecode::UnpackGeneric(si_idx) => {
                         let struct_ = interpreter.operand_stack.pop_as::<Struct>()?;
-                        if self.strict {
+                        if self.check_runtime_types {
                             let ty = resolver.instantiate_generic_type(*si_idx, self.ty_args())?;
                             if let Some(ty1) = struct_.tag() {
                                 if ty1 != ty.get_hash() {

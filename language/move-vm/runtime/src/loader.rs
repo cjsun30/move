@@ -477,14 +477,14 @@ pub(crate) struct Loader {
 
     verifier_config: VerifierConfig,
 
-    strict: bool,
+    check_runtime_types: bool,
 }
 
 impl Loader {
     pub(crate) fn new(
         natives: NativeFunctions,
         verifier_config: VerifierConfig,
-        strict: bool,
+        check_runtime_types: bool,
     ) -> Self {
         Self {
             scripts: RwLock::new(ScriptCache::new()),
@@ -494,7 +494,7 @@ impl Loader {
             invalidated: RwLock::new(false),
             module_cache_hits: RwLock::new(BTreeSet::new()),
             verifier_config,
-            strict,
+            check_runtime_types,
         }
     }
 
@@ -2313,7 +2313,7 @@ impl Loader {
             .map(|ty| self.type_to_type_layout_impl(ty, depth + 1))
             .collect::<PartialVMResult<Vec<_>>>()?;
 
-        let struct_layout = if self.strict {
+        let struct_layout = if self.check_runtime_types {
             MoveStructLayout::CheckedRuntime {
                 fields: field_layouts,
                 tag: if ty_args.is_empty() {
@@ -2375,8 +2375,8 @@ impl Loader {
         self.type_to_type_layout_impl(ty, 1)
     }
 
-    pub(crate) fn strict(&self) -> bool {
-        self.strict
+    pub(crate) fn check_runtime_types(&self) -> bool {
+        self.check_runtime_types
     }
 }
 
