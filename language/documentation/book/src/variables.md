@@ -658,7 +658,7 @@ Remember, locals can change type when they are shadowed.
 let x = 0;
 {
     let x = b"hello";
-    assert!(x = b"hello", 42);
+    assert!(x == b"hello", 42);
 };
 assert!(x == 0, 42);
 ```
