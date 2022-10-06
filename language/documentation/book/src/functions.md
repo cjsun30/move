@@ -253,7 +253,7 @@ module example {
 }
 ```
 
-`acquires` annotations must also be added for transitive calls within the module. Calls to these functions from another module do not need to annotated with these acquires because one module cannot access resources declared in another module--so the annotation is not needed to ensure reference safety.
+`acquires` annotations must also be added for transitive calls within the module. Calls to these functions from another module do not need to be annotated with these acquires because one module cannot access resources declared in another module--so the annotation is not needed to ensure reference safety.
 
 ```move=
 address 0x42 {
